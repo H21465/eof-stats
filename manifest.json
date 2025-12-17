@@ -1,0 +1,9 @@
+{
+  "id": "eof-stats",
+  "name": "EOF Stats",
+  "version": "1.0.0",
+  "minAppVersion": "0.15.0",
+  "description": "Display file statistics (URLs, Links) and EOF indicator at the end of markdown files",
+  "author": "hayamamo",
+  "isDesktopOnly": false
+}
