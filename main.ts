@@ -6,13 +6,20 @@
 
 import {
   App,
+  MarkdownView,
   Plugin,
   PluginSettingTab,
   Setting,
-  MarkdownPostProcessorContext
+  MarkdownPostProcessorContext,
+  TFile
 } from "obsidian";
 import { EditorView, Decoration, DecorationSet, WidgetType } from "@codemirror/view";
-import { StateField, Transaction } from "@codemirror/state";
+import { StateField, Transaction, Compartment } from "@codemirror/state";
+
+/**
+ * Compartment for dynamic settings reconfiguration
+ */
+const eofStatsCompartment = new Compartment();
 
 /**
  * Plugin settings interface
@@ -61,7 +68,7 @@ function calculateStats(content: string): FileStats {
   const contentWithoutFrontmatter = content.replace(/^---[\s\S]*?---\n?/, "");
 
   // URLs (unique)
-  const urlRegex = /https?:\/\/[^\s\)\]>]+/g;
+  const urlRegex = /https?:\/\/[^\s)\]>]+/g;
   const urls = new Set(contentWithoutFrontmatter.match(urlRegex) || []);
 
   // Internal links [[...]] (unique)
@@ -89,9 +96,6 @@ function formatNumber(num: number): string {
 
 /**
  * Build the statistics display string based on settings
- * @param stats - The file statistics
- * @param settings - The plugin settings
- * @returns Formatted statistics string
  */
 function buildStatsString(stats: FileStats, settings: EOFStatsSettings): string {
   const parts: string[] = [];
@@ -104,6 +108,37 @@ function buildStatsString(stats: FileStats, settings: EOFStatsSettings): string 
   }
 
   return parts.join(" | ");
+}
+
+/**
+ * Create the EOF stats container element
+ */
+function createEOFStatsElement(stats: FileStats, settings: EOFStatsSettings): HTMLElement {
+  const container = document.createElement("div");
+  container.className = "eof-stats-container";
+
+  const statsString = buildStatsString(stats, settings);
+
+  if (statsString) {
+    const statsDiv = container.createEl("div", {
+      cls: "eof-stats-line",
+      text: statsString
+    });
+    statsDiv.style.color = settings.statsColor;
+  }
+
+  const eofDiv = container.createEl("div", { cls: "eof-indicator" });
+
+  const line1 = eofDiv.createEl("div", { cls: "eof-line-horizontal" });
+  line1.style.borderColor = settings.lineColor;
+
+  const textDiv = eofDiv.createEl("div", { cls: "eof-text", text: "EOF" });
+  textDiv.style.color = settings.eofColor;
+
+  const line2 = eofDiv.createEl("div", { cls: "eof-line-horizontal" });
+  line2.style.borderColor = settings.lineColor;
+
+  return container;
 }
 
 /**
@@ -122,34 +157,8 @@ class EOFStatsWidget extends WidgetType {
     super();
   }
 
-  /**
-   * Create the DOM element for the widget
-   * @returns The container element with stats and EOF indicator
-   */
   toDOM(): HTMLElement {
-    const container = document.createElement("div");
-    container.className = "eof-stats-container";
-
-    const statsString = buildStatsString(this.stats, this.settings);
-
-    if (statsString) {
-      const statsDiv = document.createElement("div");
-      statsDiv.className = "eof-stats-line";
-      statsDiv.textContent = statsString;
-      statsDiv.style.color = this.settings.statsColor;
-      container.appendChild(statsDiv);
-    }
-
-    const eofDiv = document.createElement("div");
-    eofDiv.className = "eof-indicator";
-    eofDiv.innerHTML = `
-      <div class="eof-line-horizontal" style="border-color: ${this.settings.lineColor}"></div>
-      <div class="eof-text" style="color: ${this.settings.eofColor}">EOF</div>
-      <div class="eof-line-horizontal" style="border-color: ${this.settings.lineColor}"></div>
-    `;
-    container.appendChild(eofDiv);
-
-    return container;
+    return createEOFStatsElement(this.stats, this.settings);
   }
 
   /**
@@ -178,11 +187,13 @@ class EOFStatsWidget extends WidgetType {
  */
 function buildEOFDecoration(content: string, settings: EOFStatsSettings): DecorationSet {
   const stats = calculateStats(content);
-  const widget = new EOFStatsWidget(stats, settings);
+  // Create a copy of settings to prevent reference sharing between old and new widgets
+  const settingsCopy = { ...settings };
+  const widget = new EOFStatsWidget(stats, settingsCopy);
   const deco = Decoration.widget({
     widget,
     side: 1,
-    block: true  // ブロックレベルウィジェット（親スタイルの影響を受けない）
+    block: true
   });
   return Decoration.set([deco.range(content.length)]);
 }
@@ -200,10 +211,8 @@ function createEOFStatsField(plugin: EOFStatsPlugin) {
     },
     update(decorations: DecorationSet, tr: Transaction): DecorationSet {
       if (!tr.docChanged) {
-        // ドキュメント変更なし：既存のdecorationを位置調整のみ
         return decorations.map(tr.changes);
       }
-      // ドキュメント変更あり：再計算
       return buildEOFDecoration(tr.state.doc.toString(), plugin.settings);
     },
     provide: f => EditorView.decorations.from(f)
@@ -233,14 +242,12 @@ class EOFStatsSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    containerEl.createEl("h2", { text: "EOF Stats Settings" });
-
     // Display toggles
-    containerEl.createEl("h3", { text: "Display Items" });
+    new Setting(containerEl).setName("Display items").setHeading();
 
     new Setting(containerEl)
-      .setName("Show URLs")
-      .setDesc("Display the count of unique URLs")
+      .setName("Show external links")
+      .setDesc("Display the number of unique external links")
       .addToggle(toggle =>
         toggle
           .setValue(this.plugin.settings.showUrls)
@@ -251,7 +258,7 @@ class EOFStatsSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("Show Links")
+      .setName("Show links")
       .setDesc("Display the count of unique internal links")
       .addToggle(toggle =>
         toggle
@@ -263,10 +270,10 @@ class EOFStatsSettingTab extends PluginSettingTab {
       );
 
     // Color settings
-    containerEl.createEl("h3", { text: "Colors" });
+    new Setting(containerEl).setName("Colors").setHeading();
 
     new Setting(containerEl)
-      .setName("Stats Color")
+      .setName("Stats color")
       .setDesc("Color for the statistics text")
       .addText(text =>
         text
@@ -279,7 +286,7 @@ class EOFStatsSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("Line Color")
+      .setName("Line color")
       .setDesc("Color for the horizontal lines")
       .addText(text =>
         text
@@ -292,7 +299,7 @@ class EOFStatsSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("EOF Color")
+      .setName("EOF color")
       .setDesc("Color for the EOF text")
       .addText(text =>
         text
@@ -325,7 +332,10 @@ export default class EOFStatsPlugin extends Plugin {
     this.addSettingTab(new EOFStatsSettingTab(this.app, this));
 
     // Register CodeMirror StateField for Live Preview (block-level widget)
-    this.registerEditorExtension(createEOFStatsField(this));
+    // Using Compartment for dynamic reconfiguration when settings change
+    this.registerEditorExtension(
+      eofStatsCompartment.of(createEOFStatsField(this))
+    );
 
     // Register markdown post processor for Reading View
     this.registerMarkdownPostProcessor((el, ctx) => {
@@ -333,19 +343,15 @@ export default class EOFStatsPlugin extends Plugin {
     });
   }
 
-  /**
-   * Plugin cleanup
-   * Called when the plugin is unloaded
-   */
   onunload() {
-    // Cleanup if needed
+    // Resources are automatically cleaned up by Obsidian
   }
 
   /**
    * Load plugin settings from storage
    */
   async loadSettings() {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData() as EOFStatsSettings | null);
   }
 
   /**
@@ -353,8 +359,31 @@ export default class EOFStatsPlugin extends Plugin {
    */
   async saveSettings() {
     await this.saveData(this.settings);
-    // Trigger re-render
-    this.app.workspace.updateOptions();
+    this.updateEditorExtension();
+  }
+
+  /**
+   * Update all views to apply new settings
+   */
+  private updateEditorExtension() {
+    // Live Preview / Source Mode: dispatch reconfigure effect to all editors
+    this.app.workspace.iterateAllLeaves(leaf => {
+      if (leaf.view instanceof MarkdownView) {
+        // Access the underlying CodeMirror EditorView
+        // @ts-expect-error - accessing internal CM6 editor
+        const cm = leaf.view.editor?.cm as EditorView | undefined;
+        if (cm) {
+          cm.dispatch({
+            effects: eofStatsCompartment.reconfigure(
+              createEOFStatsField(this)
+            )
+          });
+          cm.requestMeasure();
+        }
+        // Reading View: force rerender
+        leaf.view.previewMode?.rerender(true);
+      }
+    });
   }
 
   /**
@@ -363,45 +392,21 @@ export default class EOFStatsPlugin extends Plugin {
    * @param ctx - The markdown post processor context
    */
   addEOFToReadingView(el: HTMLElement, ctx: MarkdownPostProcessorContext) {
-    // Only add to the last section
     const sectionInfo = ctx.getSectionInfo(el);
     if (!sectionInfo) return;
 
     const file = this.app.vault.getAbstractFileByPath(ctx.sourcePath);
-    if (!file) return;
+    if (!file || !(file instanceof TFile)) return;
 
-    // Check if this is the last section
-    this.app.vault.cachedRead(file as any).then(content => {
-      const lines = content.split("\n");
-      const lastLineIndex = lines.length - 1;
+    this.app.vault.cachedRead(file).then(content => {
+      const lastLineIndex = content.split("\n").length - 1;
 
-      // Check if current section contains the last line
       if (sectionInfo.lineEnd >= lastLineIndex) {
         const stats = calculateStats(content);
-        const container = document.createElement("div");
-        container.className = "eof-stats-container";
-
-        const statsString = buildStatsString(stats, this.settings);
-
-        if (statsString) {
-          const statsDiv = document.createElement("div");
-          statsDiv.className = "eof-stats-line";
-          statsDiv.textContent = statsString;
-          statsDiv.style.color = this.settings.statsColor;
-          container.appendChild(statsDiv);
-        }
-
-        const eofDiv = document.createElement("div");
-        eofDiv.className = "eof-indicator";
-        eofDiv.innerHTML = `
-          <div class="eof-line-horizontal" style="border-color: ${this.settings.lineColor}"></div>
-          <div class="eof-text" style="color: ${this.settings.eofColor}">EOF</div>
-          <div class="eof-line-horizontal" style="border-color: ${this.settings.lineColor}"></div>
-        `;
-        container.appendChild(eofDiv);
-
-        el.appendChild(container);
+        el.appendChild(createEOFStatsElement(stats, this.settings));
       }
+    }).catch(() => {
+      // Silent fail - file may have been deleted
     });
   }
 }
