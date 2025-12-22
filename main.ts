@@ -299,8 +299,8 @@ class EOFStatsSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("EOF color")
-      .setDesc("Color for the EOF text")
+      .setName("End-of-file color")
+      .setDesc("Color for the end-of-file text")
       .addText(text =>
         text
           .setPlaceholder("#999999")
@@ -371,13 +371,15 @@ export default class EOFStatsPlugin extends Plugin {
       if (leaf.view instanceof MarkdownView) {
         // Access the underlying CodeMirror EditorView
         // @ts-expect-error - accessing internal CM6 editor
-        const cm = leaf.view.editor?.cm as EditorView | undefined;
+        const cm = leaf.view.editor?.cm;
         if (cm) {
+          // @ts-expect-error - internal API
           cm.dispatch({
             effects: eofStatsCompartment.reconfigure(
               createEOFStatsField(this)
             )
           });
+          // @ts-expect-error - internal API
           cm.requestMeasure();
         }
         // Reading View: force rerender
